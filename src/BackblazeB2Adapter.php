@@ -3,6 +3,7 @@
 namespace Zaxbux\Flysystem;
 
 use ILAB\B2\Client;
+use ILAB\B2\Exceptions\NotFoundException;
 use GuzzleHttp\Psr7;
 use League\Flysystem\Config;
 use League\Flysystem\Adapter\AbstractAdapter;
@@ -68,7 +69,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	 */
 	public function read($path) {
 		$file = $this->getClient()->getFile([
-			'BucketName' => $this->bucketName(),
+			'BucketName' => $this->bucketName,
 			'FileName'   => $path
 		]);
 
@@ -134,14 +135,34 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	 * {@inheritdoc}
 	 */
 	public function deleteDir($path) {
-		return $this->delete($path);
+		// Delete all files
+		$files = $this->listContents($path, true);
+
+		foreach ($files as $file) {
+			if ($file['type'] == 'file') {
+				$this->delete($file['path']);
+			} else {
+				try {
+					$this->delete($file['path'].'/.bzEmpty');
+				} catch (NotFoundException $e) {
+					// .bzEmpty may or may not exist, ignore error
+				}
+			}
+		}
+
+		// Delete .bzEmpty to fully delete virtual folder
+		try {
+			$this->delete($path.'/.bzEmpty');
+		} catch (NotFoundException $e) {
+			// .bzEmpty may or may not exist, ignore error
+		}
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
 	public function createDir($path, Config $config) {
-		return $this->write($path, '', $config);
+		return $this->write($path.'/.bzEmpty', '', $config);
 	}
 
 	/**
@@ -188,10 +209,19 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	 * {@inheritdoc}
 	 */
 	public function listContents($directory = '', $recursive = false) {
+		// Append trailing slash to directory names
+		$prefix = $directory;
+		if ($prefix !== '') {
+			$prefix .= '/';
+		}
+
+		// Recursion removes the delimiter
+		$delimiter = ($recursive ? null : '/');
+
 		$files = $this->getClient()->listFiles([
 			'BucketName' => $this->bucketName,
-			'delimiter'  => '/',
-			'prefix'     => $directory
+			'delimiter'  => $delimiter,
+			'prefix'     => $prefix,
 		]);
 
 		return array_map([$this, 'getFileInfo'], $files);
