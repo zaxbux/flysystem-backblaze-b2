@@ -3,7 +3,6 @@
 namespace Zaxbux\Flysystem;
 
 use ILAB\B2\Client;
-use ILAB\B2\Bucket;
 use GuzzleHttp\Psr7;
 use League\Flysystem\Config;
 use League\Flysystem\Adapter\AbstractAdapter;
@@ -195,23 +194,36 @@ class BackblazeB2Adapter extends AbstractAdapter {
 			'prefix'     => $directory
 		]);
 
-		var_dump($files);
-
-		return $files;
+		return array_map([$this, 'getFileInfo'], $files);
 	}
 
 	/**
 	 * Get file info
 	 * 
-	 * @param  ILAB\B2\File $file
+	 * @param  $file ILAB\B2\File $file
 	 * @return array
 	 */
 	protected function getFileInfo($file) {
 		return [
-			'type'      => $file->getType(),
+			'type'      => $this->typeFromB2Action($file->getAction()),
 			'path'      => $file->getName(),
 			'timestamp' => $file->getUploadTimestamp(),
 			'size'      => $file->getSize()
 		];
+	}
+
+	/**
+	 * Convert a B2 API action to Flysystem type. Ignores "start", "hide"
+	 * 
+	 * @param string $action
+	 * @return string
+	 */
+	protected function typeFromB2Action($action) {
+		$typeMap = [
+			'upload' => 'file',
+			'folder' => 'dir'
+		];
+
+		return array_key_exists($action, $typeMap) ? $typeMap[$action] : null;
 	}
 }
