@@ -207,7 +207,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 		return [
 			'type'      => $this->typeFromB2Action($file->getAction()),
 			'path'      => $file->getName(),
-			'timestamp' => $file->getUploadTimestamp(),
+			'timestamp' => $file->getUploadTimestamp() / 1000.0,         // Convert millisecond timestamp to seconds
 			'size'      => $file->getSize()
 		];
 	}
