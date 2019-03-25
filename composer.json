@@ -1,0 +1,32 @@
+{
+    "name": "zaxbux/flysystem-backblaze-b2",
+    "type": "library",
+    "description": "A Flysystem adaptor for Backblaze B2",
+    "homepage": "https://github.com/zaxbux/flysystem-backblaze-b2",
+    "keywords": [
+        "flysystem",
+        "flysystem-adapter",
+        "backblaze",
+        "backblaze-b2",
+        "b2",
+        "filesystem"
+    ],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Zachary Schneider",
+            "email": "hello@zacharyschneider.ca"
+        }
+    ],
+    "require": {
+        "ilab/b2-sdk-php": "^1.4",
+        "league/flysystem": "^1.0",
+        "guzzlehttp/guzzle": "^6.1"
+    },
+    "require-dev": {},
+    "autoload": {
+        "psr-4": {
+            "Zaxbux\\Flysystem\\": "src"
+        }
+    }
+}
