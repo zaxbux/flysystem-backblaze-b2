@@ -5,7 +5,7 @@ A Flysystem adaptor for Backblaze B2.
 ``composer require zaxbux/flysystem-backblaze-b2``
 
 # Basic Usage
-```
+```php
 <?php
 
 use ILAB\B2\Client;
@@ -18,7 +18,7 @@ $filesystem = new Filesystem($adapter);
 ```
 
 # Contributions
-Feel free to contribute in any way Report an issue, make a suggestion, or send a pull request.
+Feel free to contribute in any way report an issue, make a suggestion, or send a pull request.
 
 # License
 MIT
