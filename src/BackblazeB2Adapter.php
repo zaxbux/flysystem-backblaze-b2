@@ -106,19 +106,25 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	 * {@inheritdoc}
 	 */
 	public function rename($path, $newPath) {
-		// The B2 API does not support re-naming
-		return false;
+		// Same as copy, then delete
+		$this->copy($path, $newPath);
+		$this->delete($path);
+
+		return true;
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
 	public function copy($path, $newPath) {
-		return $this->getClient()->upload([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $newPath,
-			'Body'       => @\file_get_contents($path),
+		$this->getClient()->copyFile([
+			'BucketName'        => $this->bucketName,
+			'SourceFileName'    => $path,
+			'FileName'          => $newPath,
+			'MetadataDirective' => 'COPY'
 		]);
+
+		return true;
 	}
 
 	/**
