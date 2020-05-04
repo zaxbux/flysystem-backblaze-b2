@@ -106,7 +106,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	 * {@inheritdoc}
 	 */
 	public function rename($path, $newPath) {
-		// Same as copy, then delete
+		// Same as copy then delete
 		$this->copy($path, $newPath);
 		$this->delete($path);
 
@@ -236,7 +236,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * Get file info
 	 * 
-	 * @param  $file ILAB\B2\File $file
+	 * @param  $file Zaxbux\B2\File $file
 	 * @return array
 	 */
 	protected function getFileInfo($file) {
