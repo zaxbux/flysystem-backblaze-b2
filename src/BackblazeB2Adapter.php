@@ -2,8 +2,8 @@
 
 namespace Zaxbux\Flysystem;
 
-use ILAB\B2\Client;
-use ILAB\B2\Exceptions\NotFoundException;
+use Zaxbux\B2\Client;
+use Zaxbux\B2\Exceptions\NotFoundException;
 use GuzzleHttp\Psr7;
 use League\Flysystem\Config;
 use League\Flysystem\Adapter\AbstractAdapter;
