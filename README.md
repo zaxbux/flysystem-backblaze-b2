@@ -8,7 +8,7 @@ A Flysystem adaptor for Backblaze B2.
 ```php
 <?php
 
-use ILAB\B2\Client;
+use Zaxbux\B2\Client;
 use Zaxbux\Flysystem\BackblazeB2Adapter;
 use League\Flysystem\Filesystem;
 
