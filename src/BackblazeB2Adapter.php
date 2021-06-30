@@ -6,16 +6,17 @@ use Zaxbux\B2\Client;
 use Zaxbux\B2\Exceptions\NotFoundException;
 use GuzzleHttp\Psr7;
 use League\Flysystem\Config;
-use League\Flysystem\Adapter\AbstractAdapter;
-use League\Flysystem\Adapter\Polyfill\NotSupportingVisibilityTrait;
+use League\Flysystem\FilesystemAdapter;
 
-class BackblazeB2Adapter extends AbstractAdapter {
-	use NotSupportingVisibilityTrait;
+class BackblazeB2Adapter extends FilesystemAdapter
+{
+	//use NotSupportingVisibilityTrait;
 
 	protected $client;
 	protected $bucketName;
 
-	public function __construct(Client $client, $bucketName) {
+	public function __construct(Client $client, $bucketName)
+	{
 		$this->client = $client;
 		$this->bucketName = $bucketName;
 	}
@@ -23,7 +24,8 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function has($path) {
+	public function fileExists($path)
+	{
 		return $this->getClient()->fileExists([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path,
@@ -33,14 +35,16 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function write($path, $contents, Config $config) {
+	public function write($path, $contents, Config $config)
+	{
 		return $this->writeStream($path, $contents, $config);
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
-	public function writeStream($path, $resource, Config $config) {
+	public function writeStream($path, $resource, Config $config)
+	{
 		$file = $this->getClient()->upload([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path,
@@ -53,21 +57,8 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function update($path, $contents, Config $config) {
-		return $this->writeStream($path, $contents, $config);
-	}
-
-	/**
-	 * {@inheritdoc}
-	 */
-	public function updateStream($path, $resource, Config $config) {
-		return $this->writeStream($path, $resource, $config);
-	}
-
-	/**
-	 * {@inheritdoc}
-	 */
-	public function read($path) {
+	public function read($path)
+	{
 		$file = $this->getClient()->getFile([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path
@@ -83,7 +74,8 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function readStream($path) {
+	public function readStream($path)
+	{
 		$stream   = Psr7\stream_for();
 		$download = $this->getClient()->download([
 			'BucketName' => $this->bucketName,
@@ -95,7 +87,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 
 		try {
 			$resource = Psr7\StreamWrapper::getResource($stream);
-		} catch (InvalidArgumentException $e) {
+		} catch (\InvalidArgumentException $e) {
 			return false;
 		}
 
@@ -105,32 +97,8 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function rename($path, $newPath) {
-		// Same as copy then delete
-		$this->copy($path, $newPath);
-		$this->delete($path);
-
-		return true;
-	}
-
-	/**
-	 * {@inheritdoc}
-	 */
-	public function copy($path, $newPath) {
-		$this->getClient()->copyFile([
-			'BucketName'        => $this->bucketName,
-			'SourceFileName'    => $path,
-			'FileName'          => $newPath,
-			'MetadataDirective' => 'COPY'
-		]);
-
-		return true;
-	}
-
-	/**
-	 * {@inheritdoc}
-	 */
-	public function delete($path) {
+	public function delete($path)
+	{
 		return $this->getClient()->deleteFile([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path
@@ -140,7 +108,8 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function deleteDir($path) {
+	public function deleteDirectory($path)
+	{
 		// Delete all files
 		$files = $this->listContents($path, true);
 
@@ -149,7 +118,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 				$this->delete($file['path']);
 			} else {
 				try {
-					$this->delete($file['path'].'/.bzEmpty');
+					$this->delete($file['path'] . '/.bzEmpty');
 				} catch (NotFoundException $e) {
 					// .bzEmpty may or may not exist, ignore error
 				}
@@ -158,7 +127,7 @@ class BackblazeB2Adapter extends AbstractAdapter {
 
 		// Delete .bzEmpty to fully delete virtual folder
 		try {
-			$this->delete($path.'/.bzEmpty');
+			$this->delete($path . '/.bzEmpty');
 		} catch (NotFoundException $e) {
 			// .bzEmpty may or may not exist, ignore error
 		}
@@ -167,54 +136,55 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	/**
 	 * {@inheritdoc}
 	 */
-	public function createDir($path, Config $config) {
-		return $this->write($path.'/.bzEmpty', '', $config);
+	public function createDirectory($path, Config $config)
+	{
+		return $this->write($path . '/.bzEmpty', '', $config);
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
-	public function getMetadata($path) {
-		$file = $this->getClient()->getFile([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path,
-		]);
+	public function setVisibility() {
 
-		return $this->getFileInfo($file);
+	}
+	
+	/**
+	 * {@inheritdoc}
+	 */
+	public function visibility() {
+
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
-	public function getMimetype($path) {
+	public function mimeType($path)
+	{
 		return $this->getMetadata($path);
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
-	public function getSize($path) {
+	public function lastModified($path)
+	{
 		return $this->getMetadata($path);
 	}
 
 	/**
 	 * {@inheritdoc}
 	 */
-	public function getTimestamp($path) {
+	public function fileSize($path)
+	{
 		return $this->getMetadata($path);
 	}
 
+	
 	/**
 	 * {@inheritdoc}
 	 */
-	public function getClient() {
-		return $this->client;
-	}
-
-	/**
-	 * {@inheritdoc}
-	 */
-	public function listContents($directory = '', $recursive = false) {
+	public function listContents($directory = '', $recursive = false)
+	{
 		// Append trailing slash to directory names
 		$prefix = $directory;
 		if ($prefix !== '') {
@@ -234,12 +204,62 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	}
 
 	/**
+	 * {@inheritdoc}
+	 */
+	public function move($path, $newPath)
+	{
+		// Same as copy then delete
+		$this->copy($path, $newPath);
+		$this->delete($path);
+
+		return true;
+	}
+
+	/**
+	 * {@inheritdoc}
+	 */
+	public function copy($path, $newPath)
+	{
+		$this->getClient()->copyFile([
+			'BucketName'        => $this->bucketName,
+			'SourceFileName'    => $path,
+			'FileName'          => $newPath,
+			'MetadataDirective' => 'COPY'
+		]);
+
+		return true;
+	}
+
+	/**
+	 * {@inheritdoc}
+	 */
+	protected function getMetadata($path)
+	{
+		$file = $this->getClient()->getFile([
+			'BucketName' => $this->bucketName,
+			'FileName'   => $path,
+		]);
+
+		return $this->getFileInfo($file);
+	}
+
+
+	/**
+	 * {@inheritdoc}
+	 */
+	protected function getClient()
+	{
+		return $this->client;
+	}
+
+	/**
 	 * Get file info
 	 * 
 	 * @param  $file Zaxbux\B2\File $file
 	 * @return array
 	 */
-	protected function getFileInfo($file) {
+	protected function getFileInfo($file)
+	{
 		return [
 			'type'      => $this->typeFromB2Action($file->getAction()),
 			'path'      => $file->getName(),
@@ -254,7 +274,8 @@ class BackblazeB2Adapter extends AbstractAdapter {
 	 * @param string $action
 	 * @return string
 	 */
-	protected function typeFromB2Action($action) {
+	protected function typeFromB2Action($action)
+	{
 		$typeMap = [
 			'upload' => 'file',
 			'folder' => 'dir'
