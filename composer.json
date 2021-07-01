@@ -19,6 +19,7 @@
         }
     ],
     "require": {
+        "php": ">=7.0",
         "guzzlehttp/guzzle": "^6.1",
         "league/flysystem": "2.0.4",
         "zaxbux/b2-sdk-php": "^1.3"
