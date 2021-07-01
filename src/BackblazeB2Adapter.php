@@ -5,79 +5,119 @@ namespace Zaxbux\Flysystem;
 use Zaxbux\B2\Client;
 use Zaxbux\B2\Exceptions\NotFoundException;
 use GuzzleHttp\Psr7;
+use GuzzleHttp\Psr7\Utils;
 use League\Flysystem\Config;
+use League\Flysystem\FileAttributes;
 use League\Flysystem\FilesystemAdapter;
+use League\Flysystem\FilesystemException;
+use League\Flysystem\PathPrefixer;
+use League\Flysystem\StorageAttributes;
+use League\Flysystem\UnableToDeleteDirectory;
+use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToReadFile;
+use League\Flysystem\UnableToSetVisibility;
+use League\Flysystem\Visibility;
+use League\MimeTypeDetection\FinfoMimeTypeDetector;
+use League\MimeTypeDetection\MimeTypeDetector;
+use Throwable;
+use Zaxbux\B2\Bucket;
+use Zaxbux\B2\File;
 
-class BackblazeB2Adapter extends FilesystemAdapter
+class BackblazeB2Adapter implements FilesystemAdapter
 {
-	//use NotSupportingVisibilityTrait;
 
-	protected $client;
-	protected $bucketName;
-
-	public function __construct(Client $client, $bucketName)
-	{
-		$this->client = $client;
-		$this->bucketName = $bucketName;
-	}
+	const B2_METADATA_DIRECTIVE_COPY = 'COPY';
+	const B2_FILE_TYPES = [
+		'upload' => 'file',
+		'folder' => 'dir'
+	];
 
 	/**
-	 * {@inheritdoc}
+	 * 
+	 * @var Client
 	 */
-	public function fileExists($path)
+	private $client;
+
+	/**
+	 * @var PathPrefixer
+	 */
+	private $prefixer;
+
+	/**
+	 * 
+	 * @var string
+	 */
+	private $bucketName;
+
+	/**
+	 * @var MimeTypeDetector
+	 */
+	private $mimeTypeDetector;
+
+	/**
+	 * @var array
+	 */
+	private $options;
+
+	/**
+	 * @var bool
+	 */
+	private $streamReads;
+
+	public function __construct(
+		Client $client,
+		string $bucketName,
+		string $prefix = '',
+		MimeTypeDetector $mimeTypeDetector = null,
+		array $options = [],
+		bool $streamReads = true
+	) {
+		$this->client = $client;
+		$this->prefixer = new PathPrefixer($prefix);
+		$this->bucketName = $bucketName;
+		$this->mimeTypeDetector = $mimeTypeDetector ?: new FinfoMimeTypeDetector();
+		$this->options = $options;
+		$this->streamReads = $streamReads;
+	}
+
+	public function fileExists(string $path): bool
 	{
-		return $this->getClient()->fileExists([
+		return $this->client->fileExists([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path,
 		]);
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function write($path, $contents, Config $config)
+	public function write(string $path, string $contents, Config $config): void
 	{
 		return $this->writeStream($path, $contents, $config);
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function writeStream($path, $resource, Config $config)
+	public function writeStream(string $path, $contents, Config $config): void
 	{
-		$file = $this->getClient()->upload([
+		$this->client->upload([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path,
-			'Body'       => $resource,
+			'Body'       => $contents,
 		]);
-
-		return $this->getFileInfo($file);
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function read($path)
+	public function read(string $path): string
 	{
-		$file = $this->getClient()->getFile([
+		$file = $this->client->getFile([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path
 		]);
 
-		$fileContents = $this->getClient()->download([
+		return $this->client->download([
 			'FileId' => $file->getId(),
 		]);
-
-		return ['contents' => $fileContents];
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
 	public function readStream($path)
 	{
-		$stream   = Psr7\stream_for();
-		$download = $this->getClient()->download([
+		$stream   = Utils::streamFor();
+		$download = $this->client->download([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path,
 			'SaveAs'     => $stream,
@@ -87,35 +127,37 @@ class BackblazeB2Adapter extends FilesystemAdapter
 
 		try {
 			$resource = Psr7\StreamWrapper::getResource($stream);
-		} catch (\InvalidArgumentException $e) {
-			return false;
+		} catch (Throwable $exception) {
+			throw UnableToReadFile::fromLocation($path, '', $exception);
 		}
 
 		return $download === true ? ['stream' => $resource] : false;
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function delete($path)
+	public function delete(string $path): void
 	{
-		return $this->getClient()->deleteFile([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path
-		]);
+		try {
+			$this->client->deleteFile([
+				'BucketName' => $this->bucketName,
+				'FileName'   => $path
+			]);
+		} catch (Throwable $exception) {
+			throw UnableToDeleteFile::atLocation($path, '', $exception);
+		}
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function deleteDirectory($path)
+	public function deleteDirectory(string $path): void
 	{
 		// Delete all files
 		$files = $this->listContents($path, true);
 
 		foreach ($files as $file) {
 			if ($file['type'] == 'file') {
-				$this->delete($file['path']);
+				try {
+					$this->delete($file['path']);
+				} catch (Throwable $exception) {
+					throw UnableToDeleteDirectory::atLocation($path, '', $exception->getPrevious());
+				}
 			} else {
 				try {
 					$this->delete($file['path'] . '/.bzEmpty');
@@ -133,57 +175,67 @@ class BackblazeB2Adapter extends FilesystemAdapter
 		}
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function createDirectory($path, Config $config)
+	public function createDirectory(string $path, Config $config): void
 	{
-		return $this->write($path . '/.bzEmpty', '', $config);
+		$this->write($path . '/.bzEmpty', '', $config);
 	}
 
 	/**
-	 * {@inheritdoc}
+	 * Not supported by B2 at the file-level. Only buckets can be `allPublic` or `allPrivate`.
+	 * 
+	 * @param string $path 
+	 * @param string $visibility 
+	 * @return void 
+	 * @throws FilesystemException 
 	 */
-	public function setVisibility() {
-
-	}
-	
-	/**
-	 * {@inheritdoc}
-	 */
-	public function visibility() {
-
-	}
-
-	/**
-	 * {@inheritdoc}
-	 */
-	public function mimeType($path)
+	public function setVisibility(string $path, string $visibility): void
 	{
-		return $this->getMetadata($path);
+		throw UnableToSetVisibility::atLocation($path, 'Filesystem does not support file-level visibility.');
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function lastModified($path)
+	public function visibility(string $path): FileAttributes
 	{
-		return $this->getMetadata($path);
+		$buckets = $this->client->listBuckets();
+
+		$bucket = null;
+
+		foreach ($buckets as $b) {
+			if ($this->bucketName == $b->getName()) {
+				$bucket = $b;
+			}
+		}
+
+		return FileAttributes::fromArray([
+			StorageAttributes::ATTRIBUTE_VISIBILITY => $bucket->getType() == Bucket::TYPE_PUBLIC ? Visibility::PUBLIC : Visibility::PRIVATE,
+		]);
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function fileSize($path)
+	public function mimeType(string $path): FileAttributes
 	{
-		return $this->getMetadata($path);
+		return FileAttributes::fromArray([
+			StorageAttributes::ATTRIBUTE_MIME_TYPE => $this->fetchFileMetadata($path)->getType(),
+		]);
 	}
 
-	
-	/**
-	 * {@inheritdoc}
-	 */
-	public function listContents($directory = '', $recursive = false)
+	public function lastModified(string $path): FileAttributes
+	{
+		$file = $this->fetchFileMetadata($path);
+		$mtime = $file->getInfo()['src_last_modified_millis'] ?? $file->getUploadTimestamp();
+
+		return FileAttributes::fromArray([
+			StorageAttributes::ATTRIBUTE_LAST_MODIFIED => $mtime / 1000.0,
+		]);
+	}
+
+	public function fileSize(string $path): FileAttributes
+	{
+		return FileAttributes::fromArray([
+			StorageAttributes::ATTRIBUTE_FILE_SIZE => $this->fetchFileMetadata($path)->getSize(),
+		]);
+	}
+
+
+	public function listContents($directory = '', $recursive = false): iterable
 	{
 		// Append trailing slash to directory names
 		$prefix = $directory;
@@ -194,7 +246,7 @@ class BackblazeB2Adapter extends FilesystemAdapter
 		// Recursion removes the delimiter
 		$delimiter = ($recursive ? null : '/');
 
-		$files = $this->getClient()->listFiles([
+		$files = $this->client->listFiles([
 			'BucketName' => $this->bucketName,
 			'delimiter'  => $delimiter,
 			'prefix'     => $prefix,
@@ -203,84 +255,34 @@ class BackblazeB2Adapter extends FilesystemAdapter
 		return array_map([$this, 'getFileInfo'], $files);
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function move($path, $newPath)
+	public function move(string $source, string $destination, Config $config): void
 	{
 		// Same as copy then delete
-		$this->copy($path, $newPath);
-		$this->delete($path);
-
-		return true;
+		$this->copy($source, $destination, $config);
+		$this->delete($source);
 	}
 
-	/**
-	 * {@inheritdoc}
-	 */
-	public function copy($path, $newPath)
+	public function copy(string $source, string $destination, Config $config): void
 	{
-		$this->getClient()->copyFile([
+		$this->client->copyFile([
 			'BucketName'        => $this->bucketName,
-			'SourceFileName'    => $path,
-			'FileName'          => $newPath,
-			'MetadataDirective' => 'COPY'
+			'SourceFileName'    => $source,
+			'FileName'          => $destination,
+			'MetadataDirective' => self::B2_METADATA_DIRECTIVE_COPY,
 		]);
-
-		return true;
 	}
 
 	/**
-	 * {@inheritdoc}
+	 * 
+	 * @param string $path 
+	 * @return File 
+	 * @throws NotFoundException 
 	 */
-	protected function getMetadata($path)
+	protected function fetchFileMetadata(string $path)
 	{
-		$file = $this->getClient()->getFile([
+		return $this->client->getFile([
 			'BucketName' => $this->bucketName,
 			'FileName'   => $path,
 		]);
-
-		return $this->getFileInfo($file);
-	}
-
-
-	/**
-	 * {@inheritdoc}
-	 */
-	protected function getClient()
-	{
-		return $this->client;
-	}
-
-	/**
-	 * Get file info
-	 * 
-	 * @param  $file Zaxbux\B2\File $file
-	 * @return array
-	 */
-	protected function getFileInfo($file)
-	{
-		return [
-			'type'      => $this->typeFromB2Action($file->getAction()),
-			'path'      => $file->getName(),
-			'timestamp' => $file->getUploadTimestamp() / 1000.0,         // Convert millisecond timestamp to seconds
-			'size'      => $file->getSize()
-		];
-	}
-
-	/**
-	 * Convert a B2 API action to Flysystem type. Ignores "start", "hide"
-	 * 
-	 * @param string $action
-	 * @return string
-	 */
-	protected function typeFromB2Action($action)
-	{
-		$typeMap = [
-			'upload' => 'file',
-			'folder' => 'dir'
-		];
-
-		return array_key_exists($action, $typeMap) ? $typeMap[$action] : null;
 	}
 }
