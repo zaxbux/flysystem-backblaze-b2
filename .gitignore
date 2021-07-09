@@ -1,1 +1,4 @@
+.env
+composer.lock
+.phpunit.*
 /vendor/

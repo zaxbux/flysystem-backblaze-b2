@@ -1,288 +1,425 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Zaxbux\Flysystem;
 
-use Zaxbux\B2\Client;
-use Zaxbux\B2\Exceptions\NotFoundException;
-use GuzzleHttp\Psr7;
-use GuzzleHttp\Psr7\Utils;
+use Throwable;
+use GuzzleHttp\Psr7\StreamWrapper;
 use League\Flysystem\Config;
+use League\Flysystem\DirectoryAttributes;
 use League\Flysystem\FileAttributes;
 use League\Flysystem\FilesystemAdapter;
-use League\Flysystem\FilesystemException;
 use League\Flysystem\PathPrefixer;
 use League\Flysystem\StorageAttributes;
-use League\Flysystem\UnableToDeleteDirectory;
+use League\Flysystem\UnableToCopyFile;
 use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToMoveFile;
 use League\Flysystem\UnableToReadFile;
+use League\Flysystem\UnableToRetrieveMetadata;
 use League\Flysystem\UnableToSetVisibility;
-use League\Flysystem\Visibility;
-use League\MimeTypeDetection\FinfoMimeTypeDetector;
-use League\MimeTypeDetection\MimeTypeDetector;
-use Throwable;
-use Zaxbux\B2\Bucket;
-use Zaxbux\B2\File;
+use Zaxbux\BackblazeB2\Client;
+use Zaxbux\BackblazeB2\Exceptions\NoResultsException;
+use Zaxbux\BackblazeB2\Helpers\UploadHelper;
+use Zaxbux\BackblazeB2\Object\File;
+use Zaxbux\BackblazeB2\Response\FileDownload;
 
+/**
+ * Flysystem Adapter for Backblaze B2 cloud storage.
+ *
+ * @author Zachary Schneider <hello@zacharyschneider.ca>
+ * @package Zaxbux\Flysystem
+ */
 class BackblazeB2Adapter implements FilesystemAdapter
 {
+    /** @var Client */
+    private $client;
 
-	const B2_METADATA_DIRECTIVE_COPY = 'COPY';
-	const B2_FILE_TYPES = [
-		'upload' => 'file',
-		'folder' => 'dir'
-	];
+    /** @var string */
+    private $bucketId;
 
-	/**
-	 * 
-	 * @var Client
-	 */
-	private $client;
+    /** @var PathPrefixer */
+    private $prefixer;
 
-	/**
-	 * @var PathPrefixer
-	 */
-	private $prefixer;
+    /**
+     * 
+     * @param Client      $client   Instance of B2 API client.
+     * @param null|string $bucketId The ID of your B2 bucket. If not provided,
+     *                              the bucket that the application key is restricted to will be used.
+     * @param null|string $prefix   Optional file name prefix. If not provided,
+     *                              the `namePrefix` that the application key is restricted to will be used.
+     */
+    public function __construct(
+        Client $client,
+        ?string $bucketId = null,
+        ?string $prefix = null
+    ) {
+        $this->client = $client;
+        $this->client->refreshAccountAuthorization();
+        $this->bucketId = $bucketId ?? $client->accountAuthorization()->allowed('bucketId') ?? null;
+        $this->prefixer = new PathPrefixer($prefix ?? $client->accountAuthorization()->allowed('namePrefix') ?? '');
+    }
 
-	/**
-	 * 
-	 * @var string
-	 */
-	private $bucketName;
+    /**
+     * Check the existence of a file.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path Path to check.
+     * 
+     * @return bool
+     */
+    public function fileExists(string $path): bool
+    {
+        $path = $this->prefixer->prefixPath($path);
 
-	/**
-	 * @var MimeTypeDetector
-	 */
-	private $mimeTypeDetector;
+        try {
+            return $this->client->getFileByName($path, $this->bucketId) instanceof File;
+        } catch (NoResultsException $ex) {
+            return false;
+        }
+    }
 
-	/**
-	 * @var array
-	 */
-	private $options;
+    /**
+     * Upload file with contents from a string.
+     * 
+     * {@inheritdoc}
+     * 
+     * @see writeStream()
+     */
+    public function write(string $path, string $contents, Config $config): void
+    {
+        $this->writeStream($path, $contents, $config, $config);
+    }
 
-	/**
-	 * @var bool
-	 */
-	private $streamReads;
+    /**
+     * Upload file with contents from a stream.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string   $path     Path to the file.
+     * @param resource $contents Contents of the file.
+     * @param Config   $config   Optional configuration.
+     * 
+     * @return resource
+     */
+    public function writeStream(string $path, $contents, Config $config): void
+    {
+        $path = $this->prefixer->prefixPath($path);
 
-	public function __construct(
-		Client $client,
-		string $bucketName,
-		string $prefix = '',
-		MimeTypeDetector $mimeTypeDetector = null,
-		array $options = [],
-		bool $streamReads = true
-	) {
-		$this->client = $client;
-		$this->prefixer = new PathPrefixer($prefix);
-		$this->bucketName = $bucketName;
-		$this->mimeTypeDetector = $mimeTypeDetector ?: new FinfoMimeTypeDetector();
-		$this->options = $options;
-		$this->streamReads = $streamReads;
-	}
+        UploadHelper::instance($this->client)->uploadStream($this->bucketId, $path, $contents, $config->get('mimeType'));
+    }
 
-	public function fileExists(string $path): bool
-	{
-		return $this->client->fileExists([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path,
-		]);
-	}
+    /**
+     * Download a file and return the contents as a string.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path Path to the file.
+     * 
+     * @return string
+     */
+    public function read(string $path): string
+    {
+        return $this->download($path)->getContents();
+    }
 
-	public function write(string $path, string $contents, Config $config): void
-	{
-		return $this->writeStream($path, $contents, $config);
-	}
+    /**
+     * Download a file and return the contents as a stream.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path Path to the file.
+     * 
+     * @return resource
+     */
+    public function readStream(string $path)
+    {
+        return StreamWrapper::getResource($this->download($path)->getStream());
+    }
 
-	public function writeStream(string $path, $contents, Config $config): void
-	{
-		$this->client->upload([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path,
-			'Body'       => $contents,
-		]);
-	}
+    /**
+     * Deletes a file.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path Path to the file.
+     * 
+     * @return void
+     */
+    public function delete(string $path): void
+    {
+        $path = $this->prefixer->prefixPath($path);
 
-	public function read(string $path): string
-	{
-		$file = $this->client->getFile([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path
-		]);
+        try {
+            $file = $this->client->getFileByName($path, $this->bucketId);
+            $this->client->deleteFileVersion($file->id(), $file->name());
+        } catch (Throwable $exception) {
+            throw UnableToDeleteFile::atLocation($path, $exception->getMessage(), $exception);
+        }
+    }
 
-		return $this->client->download([
-			'FileId' => $file->getId(),
-		]);
-	}
+    /**
+     * Deletes a directory and all the contained files.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path The path of the directory.
+     * 
+     * @return void
+     */
+    public function deleteDirectory(string $path): void
+    {
+        $path = $this->prefixer->prefixPath($path);
 
-	public function readStream($path)
-	{
-		$stream   = Utils::streamFor();
-		$download = $this->client->download([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path,
-			'SaveAs'     => $stream,
-		]);
+        $this->client->deleteAllFileVersions(null, null, rtrim($path, '/'));
+    }
 
-		$stream->seek(0);
+    /**
+     * Creates a directory.
+     * 
+     * B2 does not support directories. An object will be created with ".bzEmpty" appended to the specified path,
+     * which acts as a virtual "directory".
+     *
+     * {@inheritdoc}
+     * 
+     * @param string $path   Path of the directory.
+     * @param Config $config Optional configuration.
+     * 
+     * @return void
+     */
+    public function createDirectory(string $path, Config $config): void
+    {
+        $path = $this->prefixer->prefixPath($path);
 
-		try {
-			$resource = Psr7\StreamWrapper::getResource($stream);
-		} catch (Throwable $exception) {
-			throw UnableToReadFile::fromLocation($path, '', $exception);
-		}
+        $this->write(rtrim($path, '/') . '/' . File::VIRTUAL_DIRECTORY_SUFFIX, '', $config);
+    }
 
-		return $download === true ? ['stream' => $resource] : false;
-	}
+    /**
+     * B2 does not support file visibility.
+     * 
+     * {@inheritdoc}
+     * 
+     * @throws UnableToSetVisibility 
+     */
+    public function setVisibility(string $path, string $visibility): void
+    {
+        throw UnableToSetVisibility::atLocation($path, 'Filesystem does not support file visibility.');
+    }
 
-	public function delete(string $path): void
-	{
-		try {
-			$this->client->deleteFile([
-				'BucketName' => $this->bucketName,
-				'FileName'   => $path
-			]);
-		} catch (Throwable $exception) {
-			throw UnableToDeleteFile::atLocation($path, '', $exception);
-		}
-	}
+    /**
+     * B2 does not support file visibility.
+     * 
+     * {@inheritdoc}
+     */
+    public function visibility(string $path): FileAttributes
+    {
+        throw UnableToRetrieveMetadata::visibility($path, 'Filesystem does not support file visibility.');
+    }
 
-	public function deleteDirectory(string $path): void
-	{
-		// Delete all files
-		$files = $this->listContents($path, true);
+    /** {@inheritdoc} */
+    public function mimeType(string $path): FileAttributes
+    {
+        try {
+            return $this->fetchFileMetadata($path);
+        } catch (NoResultsException $exception) {
+            throw UnableToRetrieveMetadata::mimeType($path, $exception->getMessage(), $exception);
+        }
+    }
 
-		foreach ($files as $file) {
-			if ($file['type'] == 'file') {
-				try {
-					$this->delete($file['path']);
-				} catch (Throwable $exception) {
-					throw UnableToDeleteDirectory::atLocation($path, '', $exception->getPrevious());
-				}
-			} else {
-				try {
-					$this->delete($file['path'] . '/.bzEmpty');
-				} catch (NotFoundException $e) {
-					// .bzEmpty may or may not exist, ignore error
-				}
-			}
-		}
+    /** {@inheritdoc} */
+    public function lastModified(string $path): FileAttributes
+    {
+        try {
+            return $this->fetchFileMetadata($path);
+        } catch (NoResultsException $exception) {
+            throw UnableToRetrieveMetadata::lastModified($path, $exception->getMessage(), $exception);
+        }
+    }
 
-		// Delete .bzEmpty to fully delete virtual folder
-		try {
-			$this->delete($path . '/.bzEmpty');
-		} catch (NotFoundException $e) {
-			// .bzEmpty may or may not exist, ignore error
-		}
-	}
-
-	public function createDirectory(string $path, Config $config): void
-	{
-		$this->write($path . '/.bzEmpty', '', $config);
-	}
-
-	/**
-	 * Not supported by B2 at the file-level. Only buckets can be `allPublic` or `allPrivate`.
-	 * 
-	 * @param string $path 
-	 * @param string $visibility 
-	 * @return void 
-	 * @throws FilesystemException 
-	 */
-	public function setVisibility(string $path, string $visibility): void
-	{
-		throw UnableToSetVisibility::atLocation($path, 'Filesystem does not support file-level visibility.');
-	}
-
-	public function visibility(string $path): FileAttributes
-	{
-		$buckets = $this->client->listBuckets();
-
-		$bucket = null;
-
-		foreach ($buckets as $b) {
-			if ($this->bucketName == $b->getName()) {
-				$bucket = $b;
-			}
-		}
-
-		return FileAttributes::fromArray([
-			StorageAttributes::ATTRIBUTE_VISIBILITY => $bucket->getType() == Bucket::TYPE_PUBLIC ? Visibility::PUBLIC : Visibility::PRIVATE,
-		]);
-	}
-
-	public function mimeType(string $path): FileAttributes
-	{
-		return FileAttributes::fromArray([
-			StorageAttributes::ATTRIBUTE_MIME_TYPE => $this->fetchFileMetadata($path)->getType(),
-		]);
-	}
-
-	public function lastModified(string $path): FileAttributes
-	{
-		$file = $this->fetchFileMetadata($path);
-		$mtime = $file->getInfo()['src_last_modified_millis'] ?? $file->getUploadTimestamp();
-
-		return FileAttributes::fromArray([
-			StorageAttributes::ATTRIBUTE_LAST_MODIFIED => $mtime / 1000.0,
-		]);
-	}
-
-	public function fileSize(string $path): FileAttributes
-	{
-		return FileAttributes::fromArray([
-			StorageAttributes::ATTRIBUTE_FILE_SIZE => $this->fetchFileMetadata($path)->getSize(),
-		]);
-	}
+    /** {@inheritdoc} */
+    public function fileSize(string $path): FileAttributes
+    {
+        try {
+            return $this->fetchFileMetadata($path);
+        } catch (NoResultsException $exception) {
+            throw UnableToRetrieveMetadata::fileSize($path, $exception->getMessage(), $exception);
+        }
+    }
 
 
-	public function listContents($directory = '', $recursive = false): iterable
-	{
-		// Append trailing slash to directory names
-		$prefix = $directory;
-		if ($prefix !== '') {
-			$prefix .= '/';
-		}
+    /**
+     * List the contents of a directory.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path Path of the directory.
+     * @param bool $deep   Include results from all subdirectories.
+     * 
+     * @return Generator
+     */
+    public function listContents(string $path, $deep = false): iterable
+    {
+        $prefix = trim($this->prefixer->prefixPath($path), '/');
+        $prefix = empty($prefix) ? '' : $prefix . '/';
 
-		// Recursion removes the delimiter
-		$delimiter = ($recursive ? null : '/');
+        $contents = $this->client->listAllFileNames($this->bucketId, $prefix, $deep ? null : '/');
 
-		$files = $this->client->listFiles([
-			'BucketName' => $this->bucketName,
-			'delimiter'  => $delimiter,
-			'prefix'     => $prefix,
-		]);
+        foreach ($contents as $item) {
+            if ($item->action()->isUpload() || $item->action()->isFolder()) {
+                yield $this->convertItemToAttributes($item);
+            }
+        }
+    }
 
-		return array_map([$this, 'getFileInfo'], $files);
-	}
+    /**
+     * Moves a file.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $sourcePath      Path of the source file.
+     * @param string $destinationPath Path of the destination file.
+     * @param Config $config          Optional configuration.
+     * 
+     * @return void
+     */
+    public function move(string $sourcePath, string $destinationPath, Config $config): void
+    {
+        try {
+            // Same as copy then delete
+            $this->copy($sourcePath, $destinationPath, $config);
+            $this->delete($sourcePath);
+        } catch (UnableToCopyFile $exception) {
+            throw UnableToMoveFile::fromLocationTo($sourcePath, $destinationPath, $exception->getPrevious());
+        }
+    }
 
-	public function move(string $source, string $destination, Config $config): void
-	{
-		// Same as copy then delete
-		$this->copy($source, $destination, $config);
-		$this->delete($source);
-	}
+    /**
+     * Copy a file.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $sourcePath      Path of the source file.
+     * @param string $destinationPath Path of the destination file.
+     * @param Config $config          Optional configuration.
+     * 
+     * @return void
+     */
+    public function copy(string $sourcePath, string $destinationPath, Config $config): void
+    {
+        $sourcePath = $this->prefixer->prefixPath($sourcePath);
+        $destinationPath = $this->prefixer->prefixPath($destinationPath);
 
-	public function copy(string $source, string $destination, Config $config): void
-	{
-		$this->client->copyFile([
-			'BucketName'        => $this->bucketName,
-			'SourceFileName'    => $source,
-			'FileName'          => $destination,
-			'MetadataDirective' => self::B2_METADATA_DIRECTIVE_COPY,
-		]);
-	}
+        try {
+            $file = $this->client->getFileByName($sourcePath, $this->bucketId);
+        } catch (NoResultsException $exception) {
+            throw UnableToCopyFile::fromLocationTo($sourcePath, $destinationPath, $exception);
+        }
 
-	/**
-	 * 
-	 * @param string $path 
-	 * @return File 
-	 * @throws NotFoundException 
-	 */
-	protected function fetchFileMetadata(string $path)
-	{
-		return $this->client->getFile([
-			'BucketName' => $this->bucketName,
-			'FileName'   => $path,
-		]);
-	}
+        $this->client->file($file)->copy(
+            $destinationPath,
+            $config->get('destinationBucketId'),
+            $config->get('range'),
+            $config->get('metadataDirective'),
+            $config->get('contentType'),
+            $config->get('fileInfo'),
+            $config->get('fileRetention'),
+            $config->get('legalHold'),
+            $config->get('sourceServerSideEncryption'),
+            $config->get('destinationServerSideEncryption')
+        );
+    }
+
+    /**
+     * Fetches file metadata.
+     * 
+     * @param string $path Path to the file.
+     * 
+     * @return FileAttributes 
+     * 
+     * @throws NoResultsException 
+     * @throws UnableToRetrieveMetadata 
+     */
+    private function fetchFileMetadata(string $path): FileAttributes
+    {
+        $file = $this->client->getFileByName($this->prefixer->prefixPath($path), $this->bucketId);
+
+        if ($file->contentType() === 'application/octet-stream') {
+            throw UnableToRetrieveMetadata::mimeType($path, 'File has unknown MIME type: application/octet-stream');
+        }
+
+        return new FileAttributes(
+            $file->name(),
+            $file->contentLength(),
+            null,
+            (int) round(($file->lastModifiedTimestamp() ?? $file->uploadTimestamp()) / 1000),
+            $file->contentType(),
+            $this->extractExtraMetadata($file)
+        );
+    }
+
+    /**
+     * Converts a B2 `File` object into a `StorageAttributes` object.
+     * 
+     * @param File $item File to convert.
+     * 
+     * @return DirectoryAttributes|FileAttributes
+     */
+    private function convertItemToAttributes(File $item): StorageAttributes
+    {
+        if ($item->action()->isFolder()) {
+            return new DirectoryAttributes(
+                rtrim($this->prefixer->stripPrefix($item->name()), '/')
+            );
+        }
+
+        return new FileAttributes(
+            $this->prefixer->stripPrefix($item->name()),
+            $item->contentLength(),
+            null,
+            (int) round($item->lastModifiedTimestamp() / 1000),
+            $item->contentType()
+        );
+    }
+
+    /**
+     * Extracts additional metadata on a file.
+     * 
+     * @param File $file File to get metadata from.
+     * 
+     * @return array
+     */
+    private function extractExtraMetadata(File $file): array
+    {
+        return [
+            'b2' => array_filter([
+                File::ATTRIBUTE_FILE_ID => $file->id(),
+                File::ATTRIBUTE_FILE_INFO => $file->info()->get(),
+                File::ATTRIBUTE_LEGAL_HOLD => $file->legalHold(),
+                File::ATTRIBUTE_FILE_RETENTION => $file->retention(),
+                File::ATTRIBUTE_SSE => $file->serverSideEncryption()->toArray() ?? null,
+                File::ATTRIBUTE_UPLOAD_TIMESTAMP => $file->uploadTimestamp(),
+            ]),
+        ];
+    }
+
+    /**
+     * Wrapper method for the B2 client download helper.
+     * 
+     * @param mixed $path Path to the file.
+     * 
+     * @return FileDownload
+     * 
+     * @throws UnableToReadFile
+     */
+    private function download($path)
+    {
+        $path = $this->prefixer->prefixPath($path);
+
+        try {
+            return $this->client->file($this->client->getFileByName($path, $this->bucketId))->download();
+        } catch (NoResultsException $exception) {
+            throw UnableToReadFile::fromLocation($path, '', $exception);
+        }
+    }
 }

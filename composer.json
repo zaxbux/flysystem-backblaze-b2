@@ -19,14 +19,17 @@
         }
     ],
     "require": {
-        "php": ">=7.0",
-        "guzzlehttp/guzzle": "^6.1",
-        "league/flysystem": "2.0.4",
-        "zaxbux/b2-sdk-php": "^1.3"
+        "php": ">=7.4",
+        "league/flysystem": "^2.0.4",
+        "zaxbux/backblaze-b2-php": "2.0.1"
     },
     "autoload": {
         "psr-4": {
             "Zaxbux\\Flysystem\\": "src"
         }
+    },
+    "require-dev": {
+        "league/flysystem-adapter-test-utilities": "^2.1",
+        "phpunit/phpunit": "^9"
     }
 }
