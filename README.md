@@ -19,6 +19,14 @@ $adapter    = new BackblazeB2Adapter($client, 'B2_BUCKET_ID');
 $filesystem = new Filesystem($adapter);
 ```
 
+# Tests
+
+Before running tests, ensure the `B2_APPLICATION_KEY_ID`, `B2_APPLICATION_KEY`, and `B2_BUCKET_ID` environment variables are set.
+
+```
+$ ./vendor/bin/phpunit
+```
+
 # Contributions
 Feel free to contribute in any way report an issue, make a suggestion, or send a pull request.
 
