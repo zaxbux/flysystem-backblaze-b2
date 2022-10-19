@@ -16,14 +16,17 @@ use League\Flysystem\PathPrefixer;
 use League\Flysystem\StorageAttributes;
 use League\Flysystem\UnableToCopyFile;
 use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToGeneratePublicUrl;
 use League\Flysystem\UnableToMoveFile;
 use League\Flysystem\UnableToProvideChecksum;
 use League\Flysystem\UnableToReadFile;
 use League\Flysystem\UnableToRetrieveMetadata;
 use League\Flysystem\UnableToSetVisibility;
+use League\Flysystem\UrlGeneration\PublicUrlGenerator;
 use Zaxbux\BackblazeB2\Client;
 use Zaxbux\BackblazeB2\Exceptions\NoResultsException;
 use Zaxbux\BackblazeB2\Helpers\UploadHelper;
+use Zaxbux\BackblazeB2\Object\Bucket\BucketType;
 use Zaxbux\BackblazeB2\Object\File;
 use Zaxbux\BackblazeB2\Response\FileDownload;
 
@@ -44,6 +47,9 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
     /** @var string */
     private $bucketId;
 
+    /** @var \Zaxbux\BackblazeB2\Object\Bucket */
+    private $bucket;
+
     /** @var PathPrefixer */
     private $prefixer;
 
@@ -63,6 +69,7 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
         $this->client = $client;
         $this->client->refreshAccountAuthorization();
         $this->bucketId = $bucketId ?? $client->accountAuthorization()->allowed('bucketId') ?? null;
+        $this->bucket = $client->bucket()->getById($this->bucketId);
         $this->prefixer = new PathPrefixer($prefix ?? $client->accountAuthorization()->allowed('namePrefix') ?? '');
     }
 
@@ -430,6 +437,31 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
             throw UnableToReadFile::fromLocation($path, '', $exception);
         }
     }
+
+    public function publicUrl(string $path, Config $config): string
+    {
+        $path = $this->prefixer->prefixPath($path);
+        $downloadUrl = $this->client->getFileNameDownloadUrl($path, $this->bucket->name(), false);
+
+        if ($this->bucket->type() === BucketType::PUBLIC) {
+            // Objects in public buckets can be accessed without authorization.
+            return $downloadUrl;
+        }
+
+        if ($validDuration = $config->get('valid_duration')) {
+            try {
+                $authorization = $this->client->getDownloadAuthorization($path, $this->bucketId, $validDuration, $config->get('download_authorization_options'));
+                $downloadUrl .= '?' . http_build_query([
+                    'Authorization' => $authorization->authorizationToken(),
+                ]);
+            } catch (Throwable $exception) {
+                throw UnableToGeneratePublicUrl::dueToError($path, $exception);
+            }
+        }
+
+        return $downloadUrl;
+    }
+
     /**
      * Get the MD5 or SHA1 (default) hash of the file contents.
      * 
