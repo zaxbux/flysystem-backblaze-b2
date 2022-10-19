@@ -21,6 +21,7 @@
     "require": {
         "php": ">=8.0",
         "league/flysystem": "^3.0",
+        "zaxbux/backblaze-b2-php": "^2.0.2"
     },
     "require-dev": {
         "league/flysystem-adapter-test-utilities": "^3.0",
