@@ -19,17 +19,21 @@
         }
     ],
     "require": {
-        "php": ">=7.4",
-        "league/flysystem": "^2.0.4",
-        "zaxbux/backblaze-b2-php": "2.0.1"
+        "php": ">=8.0",
+        "league/flysystem": "^3.0",
+    },
+    "require-dev": {
+        "league/flysystem-adapter-test-utilities": "^3.0",
+        "phpunit/phpunit": "^9.5"
     },
     "autoload": {
         "psr-4": {
             "Zaxbux\\Flysystem\\": "src"
         }
     },
-    "require-dev": {
-        "league/flysystem-adapter-test-utilities": "^2.1",
-        "phpunit/phpunit": "^9"
+    "autoload-dev": {
+        "psr-4": {
+            "tests\\": "tests/"
+        }
     }
 }

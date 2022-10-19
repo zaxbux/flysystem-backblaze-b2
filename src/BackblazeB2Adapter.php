@@ -15,6 +15,7 @@ use League\Flysystem\FilesystemAdapter;
 use League\Flysystem\PathPrefixer;
 use League\Flysystem\StorageAttributes;
 use League\Flysystem\UnableToCopyFile;
+use League\Flysystem\UnableToDeleteDirectory;
 use League\Flysystem\UnableToDeleteFile;
 use League\Flysystem\UnableToGeneratePublicUrl;
 use League\Flysystem\UnableToMoveFile;
@@ -38,6 +39,7 @@ use Zaxbux\BackblazeB2\Response\FileDownload;
  */
 class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, ChecksumProvider
 {
+    public const DIRECTORY_DELIMITER = '/';
     public const CHECKSUM_ALGO_MD5 = 'md5';
     public const CHECKSUM_ALGO_SHA1 = 'sha1';
 
@@ -87,7 +89,29 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
         $path = $this->prefixer->prefixPath($path);
 
         try {
-            return $this->client->getFileByName($path, $this->bucketId) instanceof File;
+            $file = $this->client->getFileByName($path, $this->bucketId);
+            return $file instanceof File && $file->action()->isUpload();
+        } catch (NoResultsException $ex) {
+            return false;
+        }
+    }
+
+    /**
+     * Check the existence of a directory.
+     * 
+     * {@inheritdoc}
+     * 
+     * @param string $path Path to check.
+     * 
+     * @return bool
+     */
+    public function directoryExists(string $path): bool
+    {
+        $path = $this->prefixer->prefixPath($path);
+
+        try {
+            $file = $this->client->listFileNames($this->bucketId, '', static::DIRECTORY_DELIMITER, $path, 1)->current();
+            return $file instanceof File && $file->action()->isFolder();
         } catch (NoResultsException $ex) {
             return false;
         }
@@ -168,7 +192,11 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
             $file = $this->client->getFileByName($path, $this->bucketId);
             $this->client->deleteFileVersion($file->id(), $file->name());
         } catch (Throwable $exception) {
-            throw UnableToDeleteFile::atLocation($path, $exception->getMessage(), $exception);
+            if ($exception instanceof NoResultsException) {
+                return;
+            }
+
+            throw UnableToDeleteFile::atLocation($path, '', $exception);
         }
     }
 
@@ -185,7 +213,11 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
     {
         $path = $this->prefixer->prefixPath($path);
 
-        $this->client->deleteAllFileVersions(null, null, rtrim($path, '/'));
+        try {
+            $this->client->deleteAllFileVersions(null, null, rtrim($path, static::DIRECTORY_DELIMITER));
+        } catch (Throwable $exception) {
+            throw UnableToDeleteDirectory::atLocation($path, '', $exception);
+        }
     }
 
     /**
@@ -203,61 +235,69 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
      */
     public function createDirectory(string $path, Config $config): void
     {
-        $path = $this->prefixer->prefixPath($path);
+        $path = $this->prefixer->prefixDirectoryPath($path);
 
-        $this->write(rtrim($path, '/') . '/' . File::VIRTUAL_DIRECTORY_SUFFIX, '', $config);
+        $this->write($path . File::VIRTUAL_DIRECTORY_SUFFIX, '', $config);
     }
 
     /**
-     * B2 does not support file visibility.
+     * B2 does not support object-level ACLs, so an exception will always be thrown.
      * 
      * {@inheritdoc}
      * 
-     * @throws UnableToSetVisibility 
+     * @throws UnableToSetVisibility B2 does not support object-level ACLs.
      */
     public function setVisibility(string $path, string $visibility): void
     {
-        throw UnableToSetVisibility::atLocation($path, 'Filesystem does not support file visibility.');
+        throw UnableToSetVisibility::atLocation($path, 'object-level ACLs are not supported');
     }
 
     /**
-     * B2 does not support file visibility.
+     * B2 does not support object-level ACLs, so an exception will always be thrown.
      * 
      * {@inheritdoc}
+     * 
+     * @throws UnableToRetrieveMetadata B2 does not support object-level ACLs.
      */
     public function visibility(string $path): FileAttributes
     {
-        throw UnableToRetrieveMetadata::visibility($path, 'Filesystem does not support file visibility.');
+        throw UnableToRetrieveMetadata::visibility($path, 'object-level ACLs are not supported');
     }
 
     /** {@inheritdoc} */
     public function mimeType(string $path): FileAttributes
     {
-        try {
-            return $this->fetchFileMetadata($path);
-        } catch (NoResultsException $exception) {
-            throw UnableToRetrieveMetadata::mimeType($path, $exception->getMessage(), $exception);
+        $attributes = $this->fetchFileMetadata($path, FileAttributes::ATTRIBUTE_MIME_TYPE);
+
+        if ($attributes->mimeType() === null) {
+            throw UnableToRetrieveMetadata::mimeType($path);
         }
+
+        return $attributes;
     }
 
     /** {@inheritdoc} */
     public function lastModified(string $path): FileAttributes
     {
-        try {
-            return $this->fetchFileMetadata($path);
-        } catch (NoResultsException $exception) {
-            throw UnableToRetrieveMetadata::lastModified($path, $exception->getMessage(), $exception);
+        $attributes = $this->fetchFileMetadata($path, FileAttributes::ATTRIBUTE_LAST_MODIFIED);
+
+        if ($attributes->lastModified() === null) {
+            throw UnableToRetrieveMetadata::lastModified($path);
         }
+
+        return $attributes;
     }
 
     /** {@inheritdoc} */
     public function fileSize(string $path): FileAttributes
     {
-        try {
-            return $this->fetchFileMetadata($path);
-        } catch (NoResultsException $exception) {
-            throw UnableToRetrieveMetadata::fileSize($path, $exception->getMessage(), $exception);
+        $attributes = $this->fetchFileMetadata($path, FileAttributes::ATTRIBUTE_FILE_SIZE);
+
+        if ($attributes->fileSize() === null) {
+            throw UnableToRetrieveMetadata::fileSize($path);
         }
+
+        return $attributes;
     }
 
 
@@ -276,7 +316,7 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
         $prefix = trim($this->prefixer->prefixPath($path), '/');
         $prefix = empty($prefix) ? '' : $prefix . '/';
 
-        $contents = $this->client->listAllFileNames($this->bucketId, $prefix, $deep ? null : '/');
+        $contents = $this->client->listAllFileNames($this->bucketId, $prefix, $deep ? null : static::DIRECTORY_DELIMITER);
 
         foreach ($contents as $item) {
             if ($item->action()->isUpload() || $item->action()->isFolder()) {
@@ -350,22 +390,27 @@ class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, Check
      * 
      * @return FileAttributes 
      * 
-     * @throws NoResultsException 
      * @throws UnableToRetrieveMetadata 
      */
-    private function fetchFileMetadata(string $path): FileAttributes
+    private function fetchFileMetadata(string $path, string $type): FileAttributes
     {
-        $file = $this->client->getFileByName($this->prefixer->prefixPath($path), $this->bucketId);
+        try {
+            $file = $this->client->getFileByName($this->prefixer->prefixPath($path), $this->bucketId);
+        } catch (NoResultsException $exception) {
+            throw UnableToRetrieveMetadata::create($path, $type, 'Object does not exist', $exception);
+        }
 
         if ($file->contentType() === 'application/octet-stream') {
             throw UnableToRetrieveMetadata::mimeType($path, 'File has unknown MIME type: application/octet-stream');
         }
 
+        $lastModified = $file->lastModifiedTimestamp() ? (int) round($file->lastModifiedTimestamp() / 1000) : null;
+
         return new FileAttributes(
             $file->name(),
             $file->contentLength(),
             null,
-            (int) round(($file->lastModifiedTimestamp() ?? $file->uploadTimestamp()) / 1000),
+            $lastModified,
             $file->contentType(),
             $this->extractExtraMetadata($file)
         );
