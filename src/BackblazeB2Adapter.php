@@ -6,6 +6,8 @@ namespace Zaxbux\Flysystem;
 
 use Throwable;
 use GuzzleHttp\Psr7\StreamWrapper;
+use League\Flysystem\ChecksumAlgoIsNotSupported;
+use League\Flysystem\ChecksumProvider;
 use League\Flysystem\Config;
 use League\Flysystem\DirectoryAttributes;
 use League\Flysystem\FileAttributes;
@@ -15,6 +17,7 @@ use League\Flysystem\StorageAttributes;
 use League\Flysystem\UnableToCopyFile;
 use League\Flysystem\UnableToDeleteFile;
 use League\Flysystem\UnableToMoveFile;
+use League\Flysystem\UnableToProvideChecksum;
 use League\Flysystem\UnableToReadFile;
 use League\Flysystem\UnableToRetrieveMetadata;
 use League\Flysystem\UnableToSetVisibility;
@@ -30,8 +33,11 @@ use Zaxbux\BackblazeB2\Response\FileDownload;
  * @author Zachary Schneider <hello@zacharyschneider.ca>
  * @package Zaxbux\Flysystem
  */
-class BackblazeB2Adapter implements FilesystemAdapter
+class BackblazeB2Adapter implements FilesystemAdapter, PublicUrlGenerator, ChecksumProvider
 {
+    public const CHECKSUM_ALGO_MD5 = 'md5';
+    public const CHECKSUM_ALGO_SHA1 = 'sha1';
+
     /** @var Client */
     private $client;
 
@@ -395,6 +401,8 @@ class BackblazeB2Adapter implements FilesystemAdapter
             'b2' => array_filter([
                 File::ATTRIBUTE_FILE_ID => $file->id(),
                 File::ATTRIBUTE_FILE_INFO => $file->info()->get(),
+                File::ATTRIBUTE_CONTENT_MD5 => $file->contentMd5(),
+                File::ATTRIBUTE_CONTENT_SHA1 => $file->contentSha1(),
                 File::ATTRIBUTE_LEGAL_HOLD => $file->legalHold(),
                 File::ATTRIBUTE_FILE_RETENTION => $file->retention(),
                 File::ATTRIBUTE_SSE => $file->serverSideEncryption()->toArray() ?? null,
@@ -421,5 +429,41 @@ class BackblazeB2Adapter implements FilesystemAdapter
         } catch (NoResultsException $exception) {
             throw UnableToReadFile::fromLocation($path, '', $exception);
         }
+    }
+    /**
+     * Get the MD5 or SHA1 (default) hash of the file contents.
+     * 
+     * @return string Hexadecimal hash.
+     * 
+     * @throws UnableToProvideChecksum 
+     * @throws ChecksumAlgoIsNotSupported 
+     */
+    public function checksum(string $path, Config $config): string
+    {
+        $algo = $config->get('checksum_algo', static::CHECKSUM_ALGO_SHA1);
+
+        try {
+            $metadata = $this->fetchFileMetadata($path, 'checksum')->extraMetadata();
+        } catch (UnableToRetrieveMetadata $exception) {
+            throw new UnableToProvideChecksum($exception->reason(), $path, $exception);
+        }
+
+        if ($algo == static::CHECKSUM_ALGO_MD5) {
+            if (!isset($metadata['b2'][File::ATTRIBUTE_CONTENT_MD5])) {
+                throw new UnableToProvideChecksum('MD5 checksum is not available.', $path);
+            }
+
+            return $metadata['b2'][File::ATTRIBUTE_CONTENT_MD5];
+        }
+
+        if ($algo == static::CHECKSUM_ALGO_SHA1) {
+            if (!isset($metadata['b2'][File::ATTRIBUTE_CONTENT_SHA1])) {
+                throw new UnableToProvideChecksum('SHA1 checksum is not available.', $path);
+            }
+
+            return $metadata['b2'][File::ATTRIBUTE_CONTENT_SHA1];
+        }
+
+        throw new ChecksumAlgoIsNotSupported();
     }
 }
